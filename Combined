@@ -8,7 +8,7 @@ SoftwareSerial mySerial(2, 3); // GSM module RX=2, TX=3
 MPU9250_asukiaaa mySensor;
 
 const int micPin = A1;
-const int gasPin = A0;
+const int gasPin = A0; 
 const int ledPin = 13;
 const int threshold = 700;
 
