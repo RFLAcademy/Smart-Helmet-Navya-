@@ -1,0 +1,332 @@
+#include <Wire.h>
+#include <MPU9250_asukiaaa.h>
+#include <SoftwareSerial.h>
+
+SoftwareSerial lora(6, 5);    // LoRa module RX=6, TX=5
+SoftwareSerial mySerial(2, 3); // GSM module RX=2, TX=3
+
+MPU9250_asukiaaa mySensor;
+
+const int micPin = A1;
+const int gasPin = A0;
+const int ledPin = 13;
+const int threshold = 700;
+
+const int cancelBtn1 = 7;
+const int cancelBtn2 = 8;
+
+bool motionDetected = false;
+unsigned long motionStartTime = 0;
+const unsigned long micCheckDuration = 3000; // 3 seconds mic monitoring
+
+bool cancelTimerActive = false;
+unsigned long cancelStartTime = 0;
+const unsigned long cancelDuration = 5000;  // 5 seconds cancel window
+bool cancelPressed = false;
+
+String fallType = "";
+
+const char phoneNumber[] = "+919372340395";
+
+int consecutiveAbove = 0;     // current consecutive count of mic > threshold
+int maxConsecutiveAbove = 0;  // max consecutive count during monitoring
+
+// GAS detection settings
+const int gasThresholdLow = 300;                // trigger level
+const int gasThresholdHigh = 400;                // trigger level
+const unsigned long gasAlertInterval = 120000; // 2 minutes in ms
+unsigned long lastGasAlertTime = 0;
+
+// Helmet + relay
+const float motionThreshold = 0.25;
+const unsigned long motionTimeout = 5000;
+const unsigned long notWornTimeout = 5000;
+const unsigned long relayDelay = 60000; // changed to 60 sec for testing
+
+#define limit_switch_1 10
+#define limit_switch_2 11
+#define limit_switch_3 12
+#define relay 9
+#define vibration_motorPin 13
+
+unsigned long stillStartTime = 0;
+unsigned long notWornStartTime = 0;
+bool relayActivated = false;
+String lastState = "";
+
+bool monitoringActive = false;  // NEW: lock flag
+
+void setup() {
+  pinMode(ledPin, OUTPUT);
+  pinMode(cancelBtn1, INPUT_PULLUP);
+  pinMode(cancelBtn2, INPUT_PULLUP);
+  pinMode(limit_switch_1, INPUT_PULLUP);
+  pinMode(limit_switch_2, INPUT_PULLUP);
+  pinMode(limit_switch_3, INPUT_PULLUP);
+  pinMode(relay, OUTPUT);
+  pinMode(vibration_motorPin, OUTPUT);
+
+  digitalWrite(relay, LOW);
+  digitalWrite(vibration_motorPin, LOW);
+
+  Serial.begin(115200);
+  lora.begin(115200);
+  Wire.begin();
+  mySensor.setWire(&Wire);
+  mySensor.beginAccel();
+  mySensor.beginGyro();
+
+  mySerial.begin(9600);
+  Serial.println("Initializing GSM...");
+  Serial.println("Helmet System with LoRa Ready");
+  delay(1000);
+  sendGSMCommand("AT");
+  sendGSMCommand("AT+CMGF=1"); // SMS text mode
+}
+
+void loop() {
+  // --- Read MPU ---
+  mySensor.accelUpdate();
+  float axx = abs(mySensor.accelX());
+  float ayy = abs(mySensor.accelY());
+  bool helmetMotion = (axx >= motionThreshold || ayy >= motionThreshold);
+
+  int micValue = analogRead(micPin);
+  int gasValue = analogRead(gasPin);
+
+  // --- Limit switches ---
+  bool s1 = digitalRead(limit_switch_1) == LOW;
+  bool s2 = digitalRead(limit_switch_2) == LOW;
+  bool s3 = digitalRead(limit_switch_3) == LOW;
+  int pressedCount = s1 + s2 + s3;
+
+  bool helmetWorn = (pressedCount == 3 && helmetMotion);
+  String stateToSend = "";
+
+  // ---------------- NORMAL HELMET LOGIC ----------------
+  if (!monitoringActive) {   // skip helmet logic during monitoring
+    if (helmetWorn) {
+      Serial.println("Helmet properly worn");
+      digitalWrite(relay, LOW);
+      digitalWrite(vibration_motorPin, LOW);
+      stillStartTime = 0;
+      notWornStartTime = 0;
+      relayActivated = false;
+      stateToSend = "worn";
+
+      // Run fall detection only if helmet properly worn
+      fall_detect(gasValue, micValue);
+    }
+
+    else if (pressedCount > 0 && pressedCount < 3) {
+      Serial.println("Helmet worn improperly");
+      digitalWrite(vibration_motorPin, HIGH);
+
+      if (stillStartTime == 0) stillStartTime = millis();
+      if (millis() - stillStartTime >= motionTimeout) {
+        digitalWrite(relay, LOW);
+        digitalWrite(vibration_motorPin, LOW);
+        stillStartTime = 0;
+      }
+      notWornStartTime = 0;
+      relayActivated = false;
+      stateToSend = "improper";
+    }
+
+    else {
+      if (notWornStartTime == 0) notWornStartTime = millis();
+
+      if (millis() - notWornStartTime < notWornTimeout) {
+        Serial.println("Helmet properly worn (grace period)");
+        digitalWrite(vibration_motorPin, LOW);
+      } else {
+        Serial.println("Helmet not worn");
+        digitalWrite(vibration_motorPin, LOW);
+
+        if (!relayActivated && (millis() - notWornStartTime >= relayDelay)) {
+          digitalWrite(relay, HIGH);
+          Serial.println("Relay activated due to helmet not worn for 60 sec");
+          relayActivated = true;
+        }
+        stateToSend = "no";
+      }
+      stillStartTime = 0;
+    }
+
+    // --- Send via LoRa only if state changed ---
+    if (stateToSend != "" && stateToSend != lastState) {
+      String cmd = "AT+SEND=0," + String(stateToSend.length()) + "," + stateToSend + "\r\n";
+      lora.print(cmd);
+      Serial.println("LoRa Sent: " + cmd);
+      lastState = stateToSend;
+    }
+  }
+  
+  // ---------------- MONITORING MODE ----------------
+  else {
+    // While monitoring, only fall_detect() runs
+    fall_detect(gasValue, micValue);
+  }
+
+  //delay(200);
+}
+
+void startCancelTimer() {
+  cancelTimerActive = true;
+  cancelStartTime = millis();
+  cancelPressed = false;
+  Serial.println("Cancel window started - Press both buttons to cancel alert");
+}
+
+void transmitFallType(String type) {
+  String cmd = "AT+SEND=0," + String(type.length()) + "," + type + "\r\n";
+  lora.print(cmd);
+  Serial.println("LoRa Sent: " + cmd);
+}
+
+void executeAlert(String type) {
+  if (type == "HARD") {
+    callNumber(phoneNumber);
+  } else if (type == "MIDDLE") {
+    sendSMS("Fall detected: MIDDLE");
+  } else {
+    Serial.println("No alert action for SOFT or undefined.");
+  }
+  triggerAlert();
+}
+
+void triggerAlert() {
+  delay(3000);
+  digitalWrite(ledPin, LOW);
+}
+
+void sendSMS(String msg) {
+  mySerial.println("AT+CMGS=\"" + String(phoneNumber) + "\"");
+  delay(500);
+  mySerial.print(msg);
+  delay(500);
+  mySerial.write(26); // Ctrl+Z
+  delay(500);
+  Serial.println("SMS Sent: " + msg);
+}
+
+void callNumber(const char *number) {
+  mySerial.print("ATD");
+  mySerial.print(number);
+  mySerial.println(";");
+  Serial.println("Calling " + String(number));
+  delay(20000);
+  mySerial.println("ATH");
+  Serial.println("Call ended");
+}
+
+void sendGSMCommand(String cmd) {
+  mySerial.println(cmd);
+  delay(500);
+  while (mySerial.available()) {
+    Serial.write(mySerial.read());
+  }
+}
+
+void fall_detect(int gasValue, int micValue) {
+  float ax = mySensor.accelX();
+  float ay = mySensor.accelY();
+  float az = mySensor.accelZ();
+  float accelMag = sqrt(ax * ax + ay * ay + az * az);
+  int AM = accelMag * 10;
+
+  Serial.print("AM: "); Serial.print(AM);
+  Serial.print("  | GAS: "); Serial.print(gasValue);
+  Serial.print("  | MIC: "); Serial.println(micValue);
+
+ /* // --- GAS detection ---
+  unsigned long now = millis();
+  
+*/
+  // --- Motion detection for fall ---
+  if (AM > 15 && !motionDetected && !cancelTimerActive) {
+    motionDetected = true;
+    monitoringActive = true;   // <<< LOCK into monitoring mode
+    motionStartTime = millis();
+    consecutiveAbove = 0;
+    maxConsecutiveAbove = 0;
+    Serial.println("Motion detected - Start mic monitoring");
+  }
+
+  // Mic monitoring after motion detected
+  if (motionDetected) {
+    if (millis() - motionStartTime <= micCheckDuration) {
+      micValue = analogRead(micPin);
+      if (micValue > threshold) {
+        consecutiveAbove++;
+        if (consecutiveAbove > maxConsecutiveAbove) {
+          maxConsecutiveAbove = consecutiveAbove;
+          Serial.print("New max consecutive above threshold: ");
+          Serial.println(maxConsecutiveAbove);
+        }
+      } else {
+        consecutiveAbove = 0;
+      }
+    } else {
+      // Mic monitoring finished → decide fall type
+      if (maxConsecutiveAbove >= 5) fallType = "HARD";
+      else if (maxConsecutiveAbove == 4 || maxConsecutiveAbove == 3) fallType = "MIDDLE";
+      else if (maxConsecutiveAbove == 2) fallType = "SOFT";
+      else fallType = "";
+
+      if (fallType != "") {
+        Serial.print("Fall detected: ");
+        Serial.println(fallType);
+        digitalWrite(ledPin, HIGH);
+        startCancelTimer();
+      }
+
+      // reset after monitoring
+      motionDetected = false;
+      consecutiveAbove = 0;
+      maxConsecutiveAbove = 0;
+    }
+  }
+
+  // --- Cancel timer logic ---
+  if (cancelTimerActive) {
+    if (digitalRead(cancelBtn1) == LOW && digitalRead(cancelBtn2) == LOW) {
+      cancelPressed = true;
+      Serial.println("Cancel pressed!");
+      digitalWrite(ledPin, LOW);
+    }
+
+    if (millis() - cancelStartTime >= cancelDuration) {
+      cancelTimerActive = false;
+      monitoringActive = false;   // <<< unlock after cancel/timeout
+      if (!cancelPressed && fallType != "") {
+        digitalWrite(ledPin, LOW);
+        Serial.println("Alert triggered! Transmitting fallType via LoRa.");
+        transmitFallType(fallType);
+        executeAlert(fallType);
+      } else {
+        Serial.println("Alert cancelled.");
+        digitalWrite(ledPin, LOW);
+      }
+    }
+  }
+}
+
+void gasDetection(){
+  int gasValue = analogRead(gasPin);
+  if(micros() - lastGasAlertTime > gasAlertInterval){
+    if (gasValue > gasThresholdLow && gasValue < gasThresholdHigh) {
+    digitalWrite(ledPin, HIGH);
+    delay(500);
+    digitalWrite(ledPin, LOW);
+    delay(500);
+  
+      Serial.println("GAS Detected — Sending SMS...");
+      sendSMS("GAS Detected");
+    
+  }
+
+    lastGasAlertTime = micros();
+  }
+
+}
