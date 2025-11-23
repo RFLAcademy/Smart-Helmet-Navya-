@@ -53,7 +53,7 @@ unsigned long lastGasAlertTime = 0;
 unsigned long notWornStartTime = 0;
 bool relayActivated = false;
 String lastState = "";
-bool monitoringActive = false;
+bool monitoringActive = false;          // true only during fall handling
 unsigned long vibrationPreviousMillis = 0;
 bool vibrationState = false;
 unsigned long improperStartTime = 0;
@@ -101,63 +101,62 @@ void loop() {
   String stateToSend = "";
 
   // --- HELMET STATE LOGIC ---
- if (!monitoringActive) {
+  if (!monitoringActive) {
     if (pressedCount == 3 && helmetMotion) {
-        // Properly worn
-        Serial.println("Helmet properly worn");
-        stopVibration();
-        digitalWrite(RELAY_PIN, LOW);
-        relayActivated = false;
-        improperStartTime = 0;
-        notWornStartTime = 0;
+      // Properly worn
+      Serial.println("Helmet properly worn");
+      stopVibration();
+      digitalWrite(RELAY_PIN, LOW);
+      relayActivated = false;
+      improperStartTime = 0;
+      notWornStartTime = 0;
 
-        // Reset not worn confirmation
-        notWornPending = false;
-        notWornConfirmStart = 0;
+      // Reset not worn confirmation
+      notWornPending = false;
+      notWornConfirmStart = 0;
 
-        stateToSend = "worn";
-    } 
+      stateToSend = "worn";
+    }
     else if (pressedCount >= 1 && pressedCount <= 2) {
-        // Improperly worn
-        Serial.println("Helmet worn improperly");
-        handleImproperHelmet(true);
+      // Improperly worn
+      Serial.println("Helmet worn improperly");
+      handleImproperHelmet(true);
 
-        // Reset not worn confirmation
-        notWornPending = false;
-        notWornConfirmStart = 0;
+      // Reset not worn confirmation
+      notWornPending = false;
+      notWornConfirmStart = 0;
 
-        stateToSend = "improper";
-    } 
-   else {
-    // No switches pressed
-    if (!notWornPending) {
+      stateToSend = "improper";
+    }
+    else {
+      // No switches pressed
+      if (!notWornPending) {
         notWornPending = true;
         notWornConfirmStart = millis();  // start 2-second timer
+      }
 
-        // Immediately stop vibration when not worn timer starts
-        stopVibration();
-    }
-
-    if (millis() - notWornConfirmStart >= notWornConfirmDelay) {
+      if (millis() - notWornConfirmStart >= notWornConfirmDelay) {
         handleImproperHelmet(false);
         handleHelmetNotWorn();
         stateToSend = "no";
+      }
     }
-}
 
-
-    // --- Send state over LoRa if changed ---
+    // --- Send state over LoRa if state changed ---
     if (stateToSend != "" && stateToSend != lastState) {
-        sendLoRa(stateToSend);
-        lastState = stateToSend;
+      sendLoRa(stateToSend);
+      lastState = stateToSend;
     }
 
-    // --- Always run fall detection ---
+    // --- Fall detection only when helmet is at least on head (1–3 switches) ---
+    if (pressedCount >= 1) {
+      fall_detect(gasValue, micValue);
+    }
+
+  } else {
+    // Already in fall handling → just keep processing fall until it resets
     fall_detect(gasValue, micValue);
-} 
-else {
-    fall_detect(gasValue, micValue);
-}
+  }
 
   delay(10);
 }
@@ -170,24 +169,23 @@ void stopVibration() {
 }
 
 void handleImproperHelmet(bool switchPressed) {
-    unsigned long currentMillis = millis();
+  unsigned long currentMillis = millis();
 
-    if (switchPressed) {
-        // Start vibration toggle if interval passed
-        if (currentMillis - vibrationPreviousMillis >= vibrationInterval) {
-            vibrationPreviousMillis = currentMillis;
-            vibrationState = !vibrationState;
-            digitalWrite(VIBRATION_MOTOR, vibrationState ? HIGH : LOW);
-        }
-    } else {
-        // Helmet no longer improper, stop vibration
-        stopVibration();
+  if (switchPressed) {
+    // Start vibration toggle if interval passed
+    if (currentMillis - vibrationPreviousMillis >= vibrationInterval) {
+      vibrationPreviousMillis = currentMillis;
+      vibrationState = !vibrationState;
+      digitalWrite(VIBRATION_MOTOR, vibrationState ? HIGH : LOW);
     }
+  } else {
+    // Helmet no longer improper, stop vibration
+    stopVibration();
+  }
 
-    // Do not reset timers or stop vibration automatically
-    relayActivated = false;
+  // Do not reset timers or stop vibration automatically
+  relayActivated = false;
 }
-
 
 void handleHelmetNotWorn() {
   if (notWornStartTime == 0) notWornStartTime = millis();  // Set only once
@@ -208,7 +206,6 @@ void handleHelmetNotWorn() {
     }
   }
 }
-
 
 void sendLoRa(String msg) {
   String cmd = "AT+SEND=0," + String(msg.length()) + "," + msg + "\r\n";
@@ -279,6 +276,8 @@ void fall_detect(int gasValue, int micValue) {
   Serial.print(" | MIC: "); Serial.println(micValue);
 
   unsigned long now = millis();
+
+  // --- GAS detection ---
   if (gasValue > gasThreshold) {
     digitalWrite(LED_PIN, HIGH);
     delay(500);
@@ -291,6 +290,7 @@ void fall_detect(int gasValue, int micValue) {
     }
   }
 
+  // --- Fall motion trigger ---
   if (AM > 20 && !motionDetected && !cancelTimerActive) {
     motionDetected = true;
     monitoringActive = true;
@@ -301,18 +301,21 @@ void fall_detect(int gasValue, int micValue) {
     stopVibration();
   }
 
+  // --- Mic monitoring ---
   if (motionDetected) {
     if (millis() - motionStartTime <= micCheckDuration) {
       micValue = analogRead(MIC_PIN);
       if (micValue > micThreshold) {
         consecutiveAbove++;
         if (consecutiveAbove > maxConsecutiveAbove) maxConsecutiveAbove = consecutiveAbove;
-      } else consecutiveAbove = 0;
+      } else {
+        consecutiveAbove = 0;
+      }
     } else {
-      if (maxConsecutiveAbove >= 5) fallType = "HARD";
+      if (maxConsecutiveAbove >= 5)      fallType = "HARD";
       else if (maxConsecutiveAbove == 4 || maxConsecutiveAbove == 3) fallType = "MIDDLE";
       else if (maxConsecutiveAbove == 2) fallType = "SOFT";
-      else fallType = "";
+      else                               fallType = "";
 
       if (fallType != "") {
         Serial.print("Fall detected: "); Serial.println(fallType);
@@ -326,6 +329,17 @@ void fall_detect(int gasValue, int micValue) {
     }
   }
 
+  // --- SAFETY TIMEOUT: if something goes wrong, exit fall mode ---
+  if (monitoringActive && !cancelTimerActive && (millis() - motionStartTime > micCheckDuration + 4000)) {
+    monitoringActive = false;
+    motionDetected = false;
+    consecutiveAbove = 0;
+    maxConsecutiveAbove = 0;
+    fallType = "";
+    Serial.println("Fall detection timeout → back to helmet monitoring");
+  }
+
+  // --- Cancel window logic ---
   if (cancelTimerActive) {
     if (digitalRead(CANCEL_BTN1) == LOW && digitalRead(CANCEL_BTN2) == LOW) {
       cancelPressed = true;
@@ -335,7 +349,7 @@ void fall_detect(int gasValue, int micValue) {
 
     if (millis() - cancelStartTime >= cancelDuration) {
       cancelTimerActive = false;
-      monitoringActive = false;
+
       if (!cancelPressed && fallType != "") {
         digitalWrite(LED_PIN, LOW);
         transmitFallType(fallType);
@@ -344,6 +358,15 @@ void fall_detect(int gasValue, int micValue) {
         Serial.println("Alert cancelled.");
         digitalWrite(LED_PIN, LOW);
       }
+
+      // --- RESET SYSTEM BACK TO HELMET DETECTION ---
+      fallType = "";
+      motionDetected = false;
+      monitoringActive = false;
+      cancelPressed = false;
+      consecutiveAbove = 0;
+      maxConsecutiveAbove = 0;
+      Serial.println("System reset → Back to helmet monitoring");
     }
   }
 }
