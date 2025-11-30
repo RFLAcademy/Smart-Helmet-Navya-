@@ -1,0 +1,327 @@
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+
+#define LORA_RX 16   // ESP32 RX2 connected to LoRa TX
+#define LORA_TX 17   // ESP32 TX2 connected to LoRa RX
+#define BUZZER_PIN 23
+#define RED_LED_PIN 32
+#define GREEN_LED_PIN 33
+
+LiquidCrystal_I2C lcd(0x27, 16, 2);  // Adjust address if needed
+
+String inString = "";
+
+String currentFallType = "";
+unsigned long fallDetectedTime = 0;
+const unsigned long resetDuration = 30000;  // 30 sec
+
+// Buzzer beep pattern parameters
+bool buzzerState = false;
+unsigned long lastBuzzerToggle = 0;
+const unsigned long buzzerInterval = 500;  // beep ON/OFF every 500 ms
+const unsigned long buzzerDuration = 5000; // total buzzer time 5 seconds
+
+void setup() {
+  Serial.begin(115200);
+  Serial2.begin(115200, SERIAL_8N1, LORA_RX, LORA_TX);
+
+  pinMode(BUZZER_PIN, OUTPUT);
+  pinMode(RED_LED_PIN, OUTPUT);
+  pinMode(GREEN_LED_PIN, OUTPUT);
+
+  digitalWrite(BUZZER_PIN, LOW);
+  digitalWrite(RED_LED_PIN, LOW);
+  digitalWrite(GREEN_LED_PIN, LOW);
+
+  lcd.init();
+  lcd.backlight();
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("ESP32 LoRa RX");
+  lcd.setCursor(0, 1);
+  lcd.print("Waiting...");
+  Serial.println("ESP32 LoRa Receiver Ready");
+}
+
+void loop() {
+  // Read incoming data from LoRa serial
+  while (Serial2.available()) {
+    char c = Serial2.read();
+    if (c != '\n' && c != '\r') {
+      inString += c;
+    }
+  }
+
+  if (inString.length() > 0) {
+    Serial.println("Received: " + inString);
+
+    // Parse fall type from LoRa message, format: +RCV=0,4,HARD,-78,44
+    int firstComma = inString.indexOf(',');
+    int secondComma = inString.indexOf(',', firstComma + 1);
+    int thirdComma = inString.indexOf(',', secondComma + 1);
+
+    String fallType = "";
+
+    if (firstComma != -1 && secondComma != -1 && thirdComma != -1) {
+      fallType = inString.substring(secondComma + 1, thirdComma);
+      fallType.trim();
+    } else {
+      // fallback if parsing fails
+      fallType = inString;
+    }
+
+    Serial.println("Parsed Fall Type: " + fallType);
+
+    handleFallType(fallType);
+
+    inString = "";
+  }
+
+  // LED control for helmet status
+  if (currentFallType == "no") {
+    digitalWrite(RED_LED_PIN, HIGH);
+    digitalWrite(GREEN_LED_PIN, LOW);
+  }
+  else if (currentFallType == "improper") {
+    digitalWrite(RED_LED_PIN, HIGH);
+    digitalWrite(GREEN_LED_PIN, HIGH);
+  }
+  else if (currentFallType == "worn") {
+    digitalWrite(RED_LED_PIN, LOW);
+    digitalWrite(GREEN_LED_PIN, HIGH);
+  }
+
+  // Handle buzzer beep pattern for HARD fall
+  if (currentFallType == "HARD") {
+    digitalWrite(GREEN_LED_PIN, LOW);
+    lcd.setCursor(0,0);
+    lcd.print("Fall Detected:             ");
+    lcd.setCursor(0,1);
+    lcd.print("HARD            ");
+    unsigned long now = millis();
+    if (now - fallDetectedTime <= buzzerDuration) {
+      if (now - lastBuzzerToggle >= buzzerInterval) {
+        buzzerState = !buzzerState;
+        digitalWrite(BUZZER_PIN, buzzerState ? HIGH : LOW);
+       digitalWrite(RED_LED_PIN, HIGH);
+        lastBuzzerToggle = now;
+      }
+    } else {
+      digitalWrite(BUZZER_PIN, LOW);
+      digitalWrite(RED_LED_PIN, LOW);
+    }
+    digitalWrite(RED_LED_PIN, HIGH);
+    delay(500);
+    digitalWrite(RED_LED_PIN, LOW);
+    delay(500);
+    digitalWrite(RED_LED_PIN, HIGH);
+    delay(500);
+    digitalWrite(RED_LED_PIN, LOW);
+    delay(500);
+    digitalWrite(RED_LED_PIN, HIGH);
+    delay(500);
+    digitalWrite(RED_LED_PIN, LOW);
+    delay(500);
+    digitalWrite(RED_LED_PIN, HIGH);
+    delay(500);
+    digitalWrite(RED_LED_PIN, LOW);
+    delay(500);
+    digitalWrite(RED_LED_PIN, HIGH);
+    delay(500);
+    digitalWrite(RED_LED_PIN, LOW);
+    delay(500);
+    digitalWrite(RED_LED_PIN, HIGH);
+    delay(500);
+    digitalWrite(RED_LED_PIN, LOW);
+    delay(500);
+    digitalWrite(RED_LED_PIN, HIGH);
+    delay(500);
+    digitalWrite(RED_LED_PIN, LOW);
+    delay(500);
+    digitalWrite(RED_LED_PIN, HIGH);
+    delay(500);
+    digitalWrite(RED_LED_PIN, LOW);
+    delay(500);
+    digitalWrite(RED_LED_PIN, HIGH);
+    delay(500);
+    digitalWrite(RED_LED_PIN, LOW);
+    delay(500);
+    digitalWrite(RED_LED_PIN, HIGH);
+    delay(500);
+    digitalWrite(RED_LED_PIN, LOW);
+    delay(500);
+    resetState();
+
+  } else {
+    digitalWrite(BUZZER_PIN, LOW);
+  }
+
+  // Flash for MIDDLE fall
+  if (currentFallType == "MIDDLE") {
+    lcd.setCursor(0,0);
+    lcd.print("Fall Detected:             ");
+    lcd.setCursor(0,1);
+    lcd.print("MEDIUM           ");
+    digitalWrite(GREEN_LED_PIN, HIGH);
+    digitalWrite(RED_LED_PIN, HIGH);
+    delay(500);
+    digitalWrite(GREEN_LED_PIN, LOW);
+    digitalWrite(RED_LED_PIN, LOW);
+    delay(500);
+    digitalWrite(GREEN_LED_PIN, HIGH);
+    digitalWrite(RED_LED_PIN, HIGH);
+    delay(500);
+    digitalWrite(GREEN_LED_PIN, LOW);
+    digitalWrite(RED_LED_PIN, LOW);
+    delay(500);
+    digitalWrite(GREEN_LED_PIN, HIGH);
+    digitalWrite(RED_LED_PIN, HIGH);
+    delay(500);
+    digitalWrite(GREEN_LED_PIN, LOW);
+    digitalWrite(RED_LED_PIN, LOW);
+    delay(500);
+    digitalWrite(GREEN_LED_PIN, HIGH);
+    digitalWrite(RED_LED_PIN, HIGH);
+    delay(500);
+    digitalWrite(GREEN_LED_PIN, LOW);
+    digitalWrite(RED_LED_PIN, LOW);
+    delay(500);
+    digitalWrite(GREEN_LED_PIN, HIGH);
+    digitalWrite(RED_LED_PIN, HIGH);
+    delay(500);
+    digitalWrite(GREEN_LED_PIN, LOW);
+    digitalWrite(RED_LED_PIN, LOW);
+    delay(500);
+    digitalWrite(GREEN_LED_PIN, HIGH);
+    digitalWrite(RED_LED_PIN, HIGH);
+    delay(500);
+    digitalWrite(GREEN_LED_PIN, LOW);
+    digitalWrite(RED_LED_PIN, LOW);
+    delay(500);
+    digitalWrite(GREEN_LED_PIN, HIGH);
+    digitalWrite(RED_LED_PIN, HIGH);
+    delay(500);
+    digitalWrite(GREEN_LED_PIN, LOW);
+    digitalWrite(RED_LED_PIN, LOW);
+    delay(500);
+    digitalWrite(GREEN_LED_PIN, HIGH);
+    digitalWrite(RED_LED_PIN, HIGH);
+    delay(500);
+    digitalWrite(GREEN_LED_PIN, LOW);
+    digitalWrite(RED_LED_PIN, LOW);
+    delay(500);
+    digitalWrite(GREEN_LED_PIN, HIGH);
+    digitalWrite(RED_LED_PIN, HIGH);
+    delay(500);
+    digitalWrite(GREEN_LED_PIN, LOW);
+    digitalWrite(RED_LED_PIN, LOW);
+    delay(500);
+    digitalWrite(GREEN_LED_PIN, HIGH);
+    digitalWrite(RED_LED_PIN, HIGH);
+    delay(500);
+    digitalWrite(GREEN_LED_PIN, LOW);
+    digitalWrite(RED_LED_PIN, LOW);
+    delay(500);
+    resetState();
+  }
+
+  if (currentFallType == "SOFT") {
+    lcd.setCursor(0,0);
+    lcd.print("Fall Detected:             ");
+    lcd.setCursor(0,1);
+    lcd.print("SOFT           ");
+    digitalWrite(RED_LED_PIN, LOW);
+    digitalWrite(GREEN_LED_PIN, HIGH);
+    delay(500);
+    digitalWrite(GREEN_LED_PIN, LOW);
+    delay(500);
+    digitalWrite(GREEN_LED_PIN, HIGH);
+    delay(500);
+    digitalWrite(GREEN_LED_PIN, LOW);
+    delay(500);
+    digitalWrite(GREEN_LED_PIN, HIGH);
+    delay(500);
+    digitalWrite(GREEN_LED_PIN, LOW);
+    delay(500);
+    digitalWrite(GREEN_LED_PIN, HIGH);
+    delay(500);
+    digitalWrite(GREEN_LED_PIN, LOW);
+    delay(500);
+    digitalWrite(GREEN_LED_PIN, HIGH);
+    delay(500);
+    digitalWrite(GREEN_LED_PIN, LOW);
+    delay(500);
+    digitalWrite(GREEN_LED_PIN, HIGH);
+    delay(500);
+    digitalWrite(GREEN_LED_PIN, LOW);
+    delay(500);
+    digitalWrite(GREEN_LED_PIN, HIGH);
+    delay(500);
+    digitalWrite(GREEN_LED_PIN, LOW);
+    delay(500);
+    digitalWrite(GREEN_LED_PIN, HIGH);
+    delay(500);
+    digitalWrite(GREEN_LED_PIN, LOW);
+    delay(500);
+    digitalWrite(GREEN_LED_PIN, HIGH);
+    delay(500);
+    digitalWrite(GREEN_LED_PIN, LOW);
+    delay(500);
+    digitalWrite(GREEN_LED_PIN, HIGH);
+    delay(500);
+    digitalWrite(GREEN_LED_PIN, LOW);
+    delay(500);
+    resetState();
+
+  }
+
+  // Reset states every 1 minute
+  if (currentFallType != "" && millis() - fallDetectedTime >= resetDuration) {
+   // resetState();
+  }
+}
+
+void handleFallType(String fallType) {
+  currentFallType = fallType;
+  fallDetectedTime = millis();
+
+  // LCD will only display HARD, SOFT, or MIDDLE
+
+  // if (fallType == "HARD" || fallType == "SOFT" || fallType == "MIDDLE") {
+  //   lcd.clear();
+  // lcd.setCursor(0, 0);
+  // lcd.print("Fall Detected:");
+  //   lcd.setCursor(0, 1);
+  //   lcd.print(fallType);
+  // } else {
+  //   lcd.setCursor(0, 1);
+  //   lcd.print("Waiting...         ");
+  // }
+
+  // Log for debugging
+  if (fallType == "HARD") {
+    Serial.println("HARD fall: Red LED ON, Buzzer beeping");
+  } 
+  else if (fallType == "MIDDLE") {
+    Serial.println("MIDDLE fall: Red LED ON, Buzzer OFF");
+  }
+  else if (fallType == "SOFT") {
+    Serial.println("SOFT fall: Green LED ON, Buzzer OFF");
+  }
+  else {
+    Serial.println("Status: " + fallType);
+  }
+}
+
+void resetState() {
+  Serial.println("Resetting state after 1 min...");
+  currentFallType = "";
+  digitalWrite(RED_LED_PIN, LOW);
+  digitalWrite(GREEN_LED_PIN, LOW);
+  digitalWrite(BUZZER_PIN, LOW);
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("ESP32 LoRa RX");
+  lcd.setCursor(0, 1);
+  lcd.print("Waiting...");
+}
